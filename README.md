@@ -1,7 +1,6 @@
-# JSON to SQL Server Normalizer
+# JSON to SQL Server ETL Normalizer
 
-A powerful Python utility that automatically normalizes JSON data into relational database tables and loads them into SQL Server with proper schema design, data types, and relationships.
-
+A powerful Python ETL pipeline that automatically normalizes JSON data into relational database tables and loads them into SQL Server with proper schema design, data types, and relationships.
 ## Features
 
 - **Automatic JSON Normalization**: Converts complex nested JSON structures into properly normalized relational tables
