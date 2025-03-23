@@ -1,6 +1,6 @@
 # Contains the main entry point
-from .normalizer import JsonNormalizer
-from .sql_writer import SqlServerTableCreator
+from core.normalizer import JsonNormalizer
+from database.sql_writer import SqlServerTableCreator
 
 def process_json_to_sql_server(json_data, server, port, username, password, db, schema, root_table_name="rootTable"):
     """
