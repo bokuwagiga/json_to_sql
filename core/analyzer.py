@@ -117,7 +117,7 @@ class JsonStructureAnalyzer:
             self._init_relationship(rel_name, parent_entity, entity_name)
 
             # Process each item in the array
-            for item in enumerate(value):
+            for item in value:
                 if isinstance(item, dict):
                     # For objects in arrays, create a new entity record
                     temp_id = self._get_next_temp_id(entity_name)
