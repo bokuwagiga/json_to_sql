@@ -302,11 +302,17 @@ class SqlServerTableCreator:
                 VALUES ({', '.join(values)});
                 """
 
-                # Try a few times in case the table needs modification
-                for insert_attempt in range(3):
+                # Try until success, with a reasonable maximum attempts limit to prevent infinite loops
+                max_attempts = 10
+                attempt_count = 0
+                success = False
+                resized_columns = set()  # Track which columns have already been resized
+
+                while not success and attempt_count < max_attempts:
+                    attempt_count += 1  # Always increment on each attempt
                     try:
                         cursor.execute(insert_sql)
-                        break  # Success! Exit the retry loop
+                        success = True  # Mark as successful
                     except pyodbc.ProgrammingError as e:
                         # Handle missing columns by adding them dynamically
                         if 'Invalid column name' in str(e):
@@ -316,7 +322,8 @@ class SqlServerTableCreator:
                                 # Add the missing column with a reasonable default type
                                 alter_table_sql = f"ALTER TABLE [{schema}].[{safe_table_name}] ADD [{column_name}] NVARCHAR(255) NULL"
                                 cursor.execute(alter_table_sql)
-                                continue  # Try the insert again
+                                # This was a productive adjustment, not a failure
+                                attempt_count -= 1
                             else:
                                 traceback.print_exc()
                                 raise
@@ -325,13 +332,36 @@ class SqlServerTableCreator:
                     except pyodbc.DataError as e:
                         # Handle string truncation errors by expanding column sizes
                         if 'String or binary data would be truncated' in str(e):
-                            # Find the longest value that needs to fit
+                            # Find the longest value that needs to fit (that hasn't been resized yet)
                             alter_column_length = 0
                             alter_column_name = None
                             for long_col, long_val in zip(safe_columns, values):
-                                if isinstance(long_val, str) and len(long_val) > alter_column_length:
-                                    alter_column_length = len(long_val)
-                                    alter_column_name = long_col.replace('[', '').replace(']', '')
+                                stripped_col = long_col.replace('[', '').replace(']', '')
+                                if (isinstance(long_val, str) and long_val.startswith("'") and
+                                        long_val.endswith("'") and stripped_col not in resized_columns):
+                                    # Strip quotes for length calculation on string literals
+                                    val_length = len(long_val) - 2
+                                    if val_length > alter_column_length:
+                                        alter_column_length = val_length
+                                        alter_column_name = stripped_col
+
+                            # If we've already tried all columns, use NVARCHAR(MAX) on all string columns
+                            if alter_column_name is None:
+                                for long_col, long_val in zip(safe_columns, values):
+                                    stripped_col = long_col.replace('[', '').replace(']', '')
+                                    if (isinstance(long_val, str) and long_val.startswith("'") and
+                                            long_val.endswith("'")):
+                                        alter_column_name = stripped_col
+                                        alter_column_length = 'max'
+                                        break
+
+                            if alter_column_name:
+                                resized_columns.add(alter_column_name)  # Mark this column as resized
+                                attempt_count -= 1  # Productive adjustment
+                            else:
+                                # If we can't find any column to resize, this is an unexpected case
+                                raise Exception("Unable to determine which column to resize for truncation error")
+
                         # Handle type conversion errors
                         elif 'Conversion failed when converting' in str(e):
                             # Find which value caused the problem
@@ -341,6 +371,8 @@ class SqlServerTableCreator:
                             errored_value_index = values.index(errored_value)
                             alter_column_name = columns_copy[errored_value_index].replace('[', '').replace(']', '')
                             alter_column_length = len(errored_value)
+                            resized_columns.add(alter_column_name)  # Mark as resized
+                            attempt_count -= 1  # Productive adjustment
                         else:
                             raise  # Not a data issue we can fix, so re-raise
 
@@ -349,16 +381,18 @@ class SqlServerTableCreator:
                             255 if alter_column_length < 255 else
                             500 if alter_column_length < 500 else
                             1000 if alter_column_length < 1000 else
+                            2000 if alter_column_length < 2000 else
                             'max'  # Last resort for huge values
                         )
                         # Change the column type to fit the data
                         alter_table_sql = f"ALTER TABLE [{schema}].[{safe_table_name}] ALTER COLUMN [{alter_column_name}] NVARCHAR({alter_column_length}) NULL"
                         cursor.execute(alter_table_sql)
-                        continue  # Try the insert again with bigger column
                     except Exception as e:
                         # Catch-all for unexpected issues
                         traceback.print_exc()
                         raise e
+                if not success:
+                    raise Exception(f"Failed to insert data after {max_attempts} attempts")
 
             # Store mapping between original ID and database ID for later use
             db_id = int(cursor.fetchone()[0])
@@ -439,4 +473,3 @@ class SqlServerTableCreator:
         """
         # Replace special characters with underscores to prevent SQL injection
         return re.sub(r'[^a-zA-Z0-9_]', '_', name)
-
