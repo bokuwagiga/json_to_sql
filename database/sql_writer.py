@@ -82,6 +82,11 @@ class SqlServerTableCreator:
             self.sql_script.append(f"-- Generated SQL Script for {schema} schema")
             self.sql_script.append(f"-- Generated on {datetime.datetime.now()}")
             self.sql_script.append("")
+            # Add schema creation once at the beginning
+            self.sql_script.append(f"-- Create schema if it doesn't exist")
+            self.sql_script.append(f"IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{schema}')")
+            self.sql_script.append(f"    EXEC('CREATE SCHEMA [{schema}]');")
+            self.sql_script.append("")
 
             # Create mock cursor for script generation
             mock_cursor = MockCursor(self.sql_script)
@@ -106,7 +111,8 @@ class SqlServerTableCreator:
             # Use context manager to ensure proper connection handling
             with pyodbc.connect(self.conn_str) as conn:
                 cursor = conn.cursor()
-
+                cursor.execute(
+                    f"IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{schema}') EXEC('CREATE SCHEMA [{schema}]');")
                 # Need to process tables in dependency order (children first)
                 # so FK constraints don't fail when inserting
                 processing_order = self._determine_processing_order(tables.keys(), entity_hierarchy)
@@ -220,10 +226,6 @@ class SqlServerTableCreator:
                         safe_col_name = self._make_sql_safe(col)
                         columns.append(f"[{safe_col_name}] {sql_type}")
 
-        # Create schema if it doesn't exist
-        cursor.execute(
-            f"IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{schema}') EXEC('CREATE SCHEMA [{schema}]');"
-        )
         # Create table if it doesn't exist
         create_table_sql = f"""
         IF NOT EXISTS (
@@ -285,10 +287,6 @@ class SqlServerTableCreator:
         # This enforces uniqueness for the relationship combination
         primary_key_cols = [f"[{self._make_sql_safe(entity_name + '_id')}]" for entity_name in entity_names]
         constraints.append(f"CONSTRAINT [PK_{safe_table_name}] PRIMARY KEY ({', '.join(primary_key_cols)})")
-
-        # Make sure the schema exists before creating the table
-        cursor.execute(
-            f"IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{schema}') EXEC('CREATE SCHEMA [{schema}]');")
 
         # Only create the table if it doesn't already exist
         create_table_sql = f"""
@@ -487,56 +485,36 @@ class SqlServerTableCreator:
             self.id_maps[table_name][original_id] = db_id
 
     def _insert_relationship_data(self, cursor, table_name, table, schema="dbo"):
-        """Insert relationship data into the table."""
+        """Insert relationship data into the table without relying on table name parsing."""
         if not table:
             return  # Skip empty tables
 
         # Sanitize table name for SQL security
         safe_table_name = self._make_sql_safe(table_name)
 
-        # Parse table name to identify the relationship entities
-        parts = table_name.split('_')
-        if len(parts) >= 3 and parts[-1] == 'rel':
-            parent_entity = parts[0]
-            child_entity = parts[1]
+        for row in table:
+            columns = []
+            values = []
 
-            for row in table:
-                columns = []
-                values = []
-                parent_id = None
-                child_id = None
+            # Process each column that references an entity (ends with _id)
+            for col, value in row.items():
+                if col.endswith('_id'):
+                    entity_name = col[:-3]  # Remove '_id' suffix
 
-                # Explicitly look for the specific column names
-                parent_col = f"{parent_entity}_id"
-                child_col = f"{child_entity}_id"
+                    # Check if we have this entity and ID in our maps
+                    if entity_name in self.id_maps and value in self.id_maps[entity_name]:
+                        db_id = self.id_maps[entity_name][value]
+                        columns.append(f"[{col}]")
+                        values.append(str(db_id))
 
-                if parent_col in row and parent_entity in self.id_maps:
-                    original_id = row[parent_col]
-                    if original_id in self.id_maps[parent_entity]:
-                        parent_id = self.id_maps[parent_entity][original_id]
-                        columns.append(f"[{parent_col}]")
-                        values.append(f"'{parent_id}'")
-
-                if child_col in row and child_entity in self.id_maps:
-                    original_id = row[child_col]
-                    if original_id in self.id_maps[child_entity]:
-                        child_id = self.id_maps[child_entity][original_id]
-                        columns.append(f"[{child_col}]")
-                        values.append(f"'{child_id}'")
-
-                # Ensure both IDs are present before inserting
-                if parent_id is not None and child_id is not None:
-                    insert_sql = f"INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(columns)}) VALUES ({', '.join(values)})"
-                    try:
-                        cursor.execute(insert_sql)
-                    except Exception as e:
-                        print(f"Error inserting relationship: {e}")
-                        print(f"SQL: {insert_sql}")
-                elif parent_id is None and child_id is None:
-                    pass
-                else:
-                    print(f"Skipping relationship insert for {table_name} due to missing IDs: "
-                          f"parent_id={parent_id}, child_id={child_id}")
+            # Only insert if we have columns and values
+            if columns and values:
+                insert_sql = f"INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(columns)}) VALUES ({', '.join(values)})"
+                try:
+                    cursor.execute(insert_sql)
+                except Exception as e:
+                    print(f"Error inserting relationship: {e}")
+                    print(f"SQL: {insert_sql}")
 
     def _get_sql_type(self, value):
         """
