@@ -78,6 +78,40 @@ id_maps = creator.create_tables_and_insert_data(
 )
 ```
 
+### Using the Script Generation Feature, View the example_3.py file
+
+```python
+import json
+from core import JsonNormalizer
+from database import SqlServerTableCreator
+
+# Load your JSON data
+with open('data.json', 'r') as f:
+    json_data = json.load(f)
+
+# Step 1: Normalize JSON data into relational tables
+tables, entity_hierarchy = JsonNormalizer().normalize_json_to_nf(
+    json_data, 
+    root_table_name="MyData"
+)
+
+# Step 2: Generate SQL scripts without database connection
+creator = SqlServerTableCreator(collect_script=True)
+sql_script = creator.create_tables_and_insert_data(
+    tables,
+    entity_hierarchy,
+    schema="dbo",
+    root_table_name="MyData"
+)
+
+# Save or display the generated SQL script
+with open('generated_script.sql', 'w') as f:
+    f.write(sql_script)
+
+# Alternatively, print the script to console
+print(sql_script)
+```
+
 ## How It Works
 
 ### 1. JSON Structure Analysis
