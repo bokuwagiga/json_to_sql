@@ -32,6 +32,12 @@ pip install pandas pyodbc
 
 ## Usage
 
+### 🌐 Live Demo Using the Hosted App 
+#### Try the app online
+1. Go to [https://json2sql.streamlit.app/](https://json2sql.streamlit.app/)
+2. Paste your JSON data in the text area, configure the options, and click "Generate SQL"
+3. Copy the generated SQL script or download it for use in SQL Server
+
 ### Basic Example, View the `example_1.py` file
 
 ```python
