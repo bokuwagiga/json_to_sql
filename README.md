@@ -112,6 +112,7 @@ The `SqlServerTableCreator` class:
 
 ## Limitations and Considerations
 
+- If your JSON data contains a field named 'ID', it must be renamed before processing as this name is reserved for auto-generated primary keys in the normalized tables
 - Large JSON documents may require significant memory for processing
 - The tool makes best-effort assumptions about data types based on sample values
 - SQL Server specific; adapting to other databases would require slight modifications

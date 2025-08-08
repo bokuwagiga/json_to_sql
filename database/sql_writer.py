@@ -6,6 +6,43 @@ import pandas as pd
 import pyodbc
 
 
+class MockCursor:
+    """Mock cursor that collects SQL statements instead of executing them."""
+
+    def __init__(self, sql_script):
+        self.sql_script = sql_script
+        self.id_counters = {}  # Track ID counters per table
+        self.last_insert_id = 1
+
+    def execute(self, sql):
+        formatted_sql = sql.strip()
+        if formatted_sql:
+            # Check if this is an INSERT with OUTPUT clause
+            if "OUTPUT INSERTED.ID" in sql.upper():
+                # Extract table name for ID tracking
+                import re
+                match = re.search(r'INSERT INTO \[.*?\]\.\[(\w+)\]', sql, re.IGNORECASE)
+                if match:
+                    table_name = match.group(1)
+                    if table_name not in self.id_counters:
+                        self.id_counters[table_name] = 1
+                    self.last_insert_id = self.id_counters[table_name]
+                    self.id_counters[table_name] += 1
+
+                # Remove OUTPUT clause for script generation
+                formatted_sql = re.sub(r'OUTPUT INSERTED\.ID\s*', '', formatted_sql, flags=re.IGNORECASE)
+
+            # Strip all trailing semicolons and whitespace
+            formatted_sql = formatted_sql.rstrip(';').strip()
+            # Add exactly one semicolon and append to script
+            self.sql_script.append(formatted_sql + ";")
+            self.sql_script.append("")
+
+    def fetchone(self):
+        result = [self.last_insert_id]
+        return result
+
+
 class SqlServerTableCreator:
     """
     Creates SQL tables from normalized data structure and inserts records.
@@ -14,19 +51,22 @@ class SqlServerTableCreator:
     while managing the complex parent-child relationships between tables.
     """
 
-    def __init__(self, conn_str):
+    def __init__(self, conn_str=None, collect_script=False):
         """
         Initialize with a connection string to SQL Server.
 
         Args:
             conn_str: Connection string for SQL Server
+            collect_script: If True, collect SQL script instead of executing
         """
         self.conn_str = conn_str
-        self.id_maps = {}  # Maps table IDs to database IDs
+        self.id_maps = {}
+        self.collect_script = collect_script
+        self.sql_script = []
 
     def create_tables_and_insert_data(self, tables, entity_hierarchy, schema="dbo", root_table_name="rootTable"):
         """
-        Create tables in SQL Server and insert data from children up to parents.
+        Create tables in SQL Server and insert data, or generate SQL script.
 
         Args:
             tables: Dictionary of normalized tables
@@ -35,37 +75,63 @@ class SqlServerTableCreator:
             root_table_name: Name of the main/root table
 
         Returns:
-            dict: Maps original IDs to database IDs for reference
+            dict or str: ID mappings if executing, SQL script if collecting
         """
-        # Use context manager to ensure proper connection handling
-        with pyodbc.connect(self.conn_str) as conn:
-            cursor = conn.cursor()
+        if self.collect_script:
+            self.sql_script = []
+            self.sql_script.append(f"-- Generated SQL Script for {schema} schema")
+            self.sql_script.append(f"-- Generated on {datetime.datetime.now()}")
+            self.sql_script.append("")
 
-            # Need to process tables in dependency order (children first)
-            # so FK constraints don't fail when inserting
+            # Create mock cursor for script generation
+            mock_cursor = MockCursor(self.sql_script)
+
             processing_order = self._determine_processing_order(tables.keys(), entity_hierarchy)
 
-            # Create and populate entity tables first
-            # (these hold actual data, not relationships)
             for table_name in processing_order:
                 if table_name in tables and not table_name.endswith('_rel'):
                     table = tables[table_name]
-                    # Flag root table for special handling (IsCurrent column)
-                    self._create_entity_table_if_not_exists(cursor, table_name, table, schema,
+                    self._create_entity_table_if_not_exists(mock_cursor, table_name, table, schema,
                                                             is_root_table=table_name == root_table_name)
-                    self._insert_entity_data(cursor, table_name, table, schema)
-                    conn.commit()  # Commit after each table to avoid long transactions
+                    self._insert_entity_data(mock_cursor, table_name, table, schema)
 
-            # Now process junction/relationship tables that connect entities
-            # These need the entity tables to exist first for FK constraints
             for table_name in tables.keys():
                 if table_name.endswith('_rel'):
                     table = tables[table_name]
-                    self._create_relationship_table_if_not_exists(cursor, table_name, table, schema)
-                    self._insert_relationship_data(cursor, table_name, table, schema)
-                    conn.commit()
+                    self._create_relationship_table_if_not_exists(mock_cursor, table_name, table, schema)
+                    self._insert_relationship_data(mock_cursor, table_name, table, schema)
 
-        return self.id_maps  # Return ID mappings for reference
+            return "\n".join(self.sql_script)
+        else:
+            # Use context manager to ensure proper connection handling
+            with pyodbc.connect(self.conn_str) as conn:
+                cursor = conn.cursor()
+
+                # Need to process tables in dependency order (children first)
+                # so FK constraints don't fail when inserting
+                processing_order = self._determine_processing_order(tables.keys(), entity_hierarchy)
+
+                # Create and populate entity tables first
+                # (these hold actual data, not relationships)
+                for table_name in processing_order:
+                    if table_name in tables and not table_name.endswith('_rel'):
+                        table = tables[table_name]
+                        # Flag root table for special handling (IsCurrent column)
+                        self._create_entity_table_if_not_exists(cursor, table_name, table, schema,
+                                                                is_root_table=table_name == root_table_name)
+                        self._insert_entity_data(cursor, table_name, table, schema)
+                        conn.commit()  # Commit after each table to avoid long transactions
+
+                # Now process junction/relationship tables that connect entities
+                # These need the entity tables to exist first for FK constraints
+                for table_name in tables.keys():
+                    if table_name.endswith('_rel'):
+                        table = tables[table_name]
+                        self._create_relationship_table_if_not_exists(cursor, table_name, table, schema)
+                        self._insert_relationship_data(cursor, table_name, table, schema)
+                        conn.commit()
+
+            return self.id_maps  # Return ID mappings for reference
 
     def _determine_processing_order(self, table_names, entity_hierarchy):
         """
@@ -246,7 +312,7 @@ class SqlServerTableCreator:
         Insert entity data into the table and map original IDs to database IDs.
 
         Args:
-            cursor: SQL Server cursor
+            cursor: SQL Server cursor or MockCursor
             table_name: Table name
             table: Table data to insert
             schema: SQL Server schema
@@ -255,7 +321,12 @@ class SqlServerTableCreator:
         safe_table_name = self._make_sql_safe(table_name)
 
         # Track ID mappings between our temp IDs and actual DB IDs
-        self.id_maps[table_name] = {}
+        if table_name not in self.id_maps:
+            self.id_maps[table_name] = {}
+
+        # When collecting script, use sequential IDs starting from 1
+        if self.collect_script:
+            next_id = 1
 
         # Process each row separately to get back the inserted IDs
         for row in table:
@@ -263,19 +334,25 @@ class SqlServerTableCreator:
             columns = [col for col in row.keys() if col != 'id']
 
             if not columns:  # Edge case: empty tables need at least one column
-                # Check if dummy column exists before adding it
-                cursor.execute(
-                    f"SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID(N'[{schema}].[{safe_table_name}]') AND name = 'dummy'")
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute(f"ALTER TABLE [{schema}].[{safe_table_name}] ADD dummy BIT NULL")
+                if self.collect_script:
+                    # For script generation, just insert with default values
+                    cursor.execute(f"INSERT INTO [{schema}].[{safe_table_name}] DEFAULT VALUES")
+                    db_id = next_id
+                    next_id += 1
+                else:
+                    # Logic for actual execution
+                    cursor.execute(
+                        f"SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID(N'[{schema}].[{safe_table_name}]') AND name = 'dummy'")
+                    if cursor.fetchone()[0] == 0:
+                        cursor.execute(f"ALTER TABLE [{schema}].[{safe_table_name}] ADD dummy BIT NULL")
 
-                # Just insert NULL to get an ID back
-                insert_sql = f"INSERT INTO [{schema}].[{safe_table_name}] (dummy) OUTPUT INSERTED.ID VALUES (NULL);"
-                try:
-                    cursor.execute(insert_sql)
-                except Exception as e:
-                    # Log trace for debugging but let it continue
-                    traceback.print_exc()
+                    insert_sql = f"INSERT INTO [{schema}].[{safe_table_name}] (dummy) OUTPUT INSERTED.ID VALUES (NULL);"
+                    try:
+                        cursor.execute(insert_sql)
+                        db_id = int(cursor.fetchone()[0])
+                    except Exception as e:
+                        traceback.print_exc()
+                        raise e
             else:
                 # Format values for SQL insertion
                 values = []
@@ -295,146 +372,171 @@ class SqlServerTableCreator:
                 # Make column names SQL-safe
                 safe_columns = [f"[{self._make_sql_safe(col)}]" for col in columns]
 
-                # Create the insert statement
-                insert_sql = f"""
-                INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(safe_columns)})
-                OUTPUT INSERTED.ID
-                VALUES ({', '.join(values)});
-                """
+                if self.collect_script:
+                    # For script generation, just create the INSERT without OUTPUT
+                    insert_sql = f"INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(safe_columns)}) VALUES ({', '.join(values)})"
+                    cursor.execute(insert_sql)
+                    db_id = next_id
+                    next_id += 1
+                else:
+                    # Logic with error handling for actual execution
+                    insert_sql = f"""
+                    INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(safe_columns)})
+                    OUTPUT INSERTED.ID
+                    VALUES ({', '.join(values)});
+                    """
 
-                # Try until success, with a reasonable maximum attempts limit to prevent infinite loops
-                max_attempts = 10
-                attempt_count = 0
-                success = False
-                resized_columns = set()  # Track which columns have already been resized
+                    # Try until success, with a reasonable maximum attempts limit to prevent infinite loops
+                    max_attempts = 10
+                    attempt_count = 0
+                    success = False
+                    resized_columns = set()  # Track which columns have already been resized
 
-                while not success and attempt_count < max_attempts:
-                    attempt_count += 1  # Always increment on each attempt
-                    try:
-                        cursor.execute(insert_sql)
-                        success = True  # Mark as successful
-                    except pyodbc.ProgrammingError as e:
-                        # Handle missing columns by adding them dynamically
-                        if 'Invalid column name' in str(e):
-                            match = re.search(r"Invalid column name '(.+?)'", str(e))
-                            if match:
-                                column_name = match.group(1)
-                                # Add the missing column with a reasonable default type
-                                alter_table_sql = f"ALTER TABLE [{schema}].[{safe_table_name}] ADD [{column_name}] NVARCHAR(255) NULL"
-                                cursor.execute(alter_table_sql)
-                                # This was a productive adjustment, not a failure
-                                attempt_count -= 1
+                    while not success and attempt_count < max_attempts:
+                        attempt_count += 1  # Always increment on each attempt
+                        try:
+                            cursor.execute(insert_sql)
+                            success = True  # Mark as successful
+                        except pyodbc.ProgrammingError as e:
+                            # Handle missing columns by adding them dynamically
+                            if 'Invalid column name' in str(e):
+                                match = re.search(r"Invalid column name '(.+?)'", str(e))
+                                if match:
+                                    column_name = match.group(1)
+                                    # Add the missing column with a reasonable default type
+                                    alter_table_sql = f"ALTER TABLE [{schema}].[{safe_table_name}] ADD [{column_name}] NVARCHAR(255) NULL"
+                                    cursor.execute(alter_table_sql)
+                                    # This was a productive adjustment, not a failure
+                                    attempt_count -= 1
+                                else:
+                                    traceback.print_exc()
+                                    raise
                             else:
-                                traceback.print_exc()
-                                raise
-                        else:
-                            raise  # Not a column issue, so re-raise
-                    except pyodbc.DataError as e:
-                        # Handle string truncation errors by expanding column sizes
-                        if 'String or binary data would be truncated' in str(e):
-                            # Find the longest value that needs to fit (that hasn't been resized yet)
-                            alter_column_length = 0
-                            alter_column_name = None
-                            for long_col, long_val in zip(safe_columns, values):
-                                stripped_col = long_col.replace('[', '').replace(']', '')
-                                if (isinstance(long_val, str) and long_val.startswith("'") and
-                                        long_val.endswith("'") and stripped_col not in resized_columns):
-                                    # Strip quotes for length calculation on string literals
-                                    val_length = len(long_val) - 2
-                                    if val_length > alter_column_length:
-                                        alter_column_length = val_length
-                                        alter_column_name = stripped_col
-
-                            # If we've already tried all columns, use NVARCHAR(MAX) on all string columns
-                            if alter_column_name is None:
+                                raise  # Not a column issue, so re-raise
+                        except pyodbc.DataError as e:
+                            # Handle string truncation errors by expanding column sizes
+                            if 'String or binary data would be truncated' in str(e):
+                                # Find the longest value that needs to fit (that hasn't been resized yet)
+                                alter_column_length = 0
+                                alter_column_name = None
                                 for long_col, long_val in zip(safe_columns, values):
                                     stripped_col = long_col.replace('[', '').replace(']', '')
                                     if (isinstance(long_val, str) and long_val.startswith("'") and
-                                            long_val.endswith("'")):
-                                        alter_column_name = stripped_col
-                                        alter_column_length = 'max'
-                                        break
+                                            long_val.endswith("'") and stripped_col not in resized_columns):
+                                        # Strip quotes for length calculation on string literals
+                                        val_length = len(long_val) - 2
+                                        if val_length > alter_column_length:
+                                            alter_column_length = val_length
+                                            alter_column_name = stripped_col
 
-                            if alter_column_name:
-                                resized_columns.add(alter_column_name)  # Mark this column as resized
+                                # If we've already tried all columns, use NVARCHAR(MAX) on all string columns
+                                if alter_column_name is None:
+                                    for long_col, long_val in zip(safe_columns, values):
+                                        stripped_col = long_col.replace('[', '').replace(']', '')
+                                        if (isinstance(long_val, str) and long_val.startswith("'") and
+                                                long_val.endswith("'")):
+                                            alter_column_name = stripped_col
+                                            alter_column_length = 'max'
+                                            break
+
+                                if alter_column_name:
+                                    resized_columns.add(alter_column_name)  # Mark this column as resized
+                                    attempt_count -= 1  # Productive adjustment
+                                else:
+                                    # If we can't find any column to resize, this is an unexpected case
+                                    raise Exception("Unable to determine which column to resize for truncation error")
+
+                            # Handle type conversion errors
+                            elif 'Conversion failed when converting' in str(e):
+                                # Find which value caused the problem
+                                errored_value = str(e).split('to data type')[0].strip().rsplit(' ')[-1]
+                                columns_copy = [str(col) for col in safe_columns]
+                                # Find the problem column
+                                errored_value_index = values.index(errored_value)
+                                alter_column_name = columns_copy[errored_value_index].replace('[', '').replace(']', '')
+                                alter_column_length = len(errored_value)
+                                resized_columns.add(alter_column_name)  # Mark as resized
                                 attempt_count -= 1  # Productive adjustment
                             else:
-                                # If we can't find any column to resize, this is an unexpected case
-                                raise Exception("Unable to determine which column to resize for truncation error")
+                                raise  # Not a data issue we can fix, so re-raise
 
-                        # Handle type conversion errors
-                        elif 'Conversion failed when converting' in str(e):
-                            # Find which value caused the problem
-                            errored_value = str(e).split('to data type')[0].strip().rsplit(' ')[-1]
-                            columns_copy = [str(col) for col in safe_columns]
-                            # Find the problem column
-                            errored_value_index = values.index(errored_value)
-                            alter_column_name = columns_copy[errored_value_index].replace('[', '').replace(']', '')
-                            alter_column_length = len(errored_value)
-                            resized_columns.add(alter_column_name)  # Mark as resized
-                            attempt_count -= 1  # Productive adjustment
-                        else:
-                            raise  # Not a data issue we can fix, so re-raise
+                            # Choose an appropriate column size, escalating as needed
+                            alter_column_length = (
+                                255 if alter_column_length < 255 else
+                                500 if alter_column_length < 500 else
+                                1000 if alter_column_length < 1000 else
+                                2000 if alter_column_length < 2000 else
+                                'max'  # Last resort for huge values
+                            )
+                            # Change the column type to fit the data
+                            alter_table_sql = f"ALTER TABLE [{schema}].[{safe_table_name}] ALTER COLUMN [{alter_column_name}] NVARCHAR({alter_column_length}) NULL"
+                            cursor.execute(alter_table_sql)
+                        except Exception as e:
+                            # Catch-all for unexpected issues
+                            traceback.print_exc()
+                            raise e
 
-                        # Choose an appropriate column size, escalating as needed
-                        alter_column_length = (
-                            255 if alter_column_length < 255 else
-                            500 if alter_column_length < 500 else
-                            1000 if alter_column_length < 1000 else
-                            2000 if alter_column_length < 2000 else
-                            'max'  # Last resort for huge values
-                        )
-                        # Change the column type to fit the data
-                        alter_table_sql = f"ALTER TABLE [{schema}].[{safe_table_name}] ALTER COLUMN [{alter_column_name}] NVARCHAR({alter_column_length}) NULL"
-                        cursor.execute(alter_table_sql)
-                    except Exception as e:
-                        # Catch-all for unexpected issues
-                        traceback.print_exc()
-                        raise e
-                if not success:
-                    raise Exception(f"Failed to insert data after {max_attempts} attempts")
+                    if not success:
+                        raise Exception(f"Failed to insert data after {max_attempts} attempts")
+
+                    # Get the database-generated ID
+                    db_id = int(cursor.fetchone()[0])
 
             # Store mapping between original ID and database ID for later use
-            db_id = int(cursor.fetchone()[0])
             original_id = int(row['id'])
             self.id_maps[table_name][original_id] = db_id
 
     def _insert_relationship_data(self, cursor, table_name, table, schema="dbo"):
-        """
-        Insert relationship data into the table, using the mapped IDs from entity tables.
-        """
+        """Insert relationship data into the table."""
+        if not table:
+            return  # Skip empty tables
+
         # Sanitize table name for SQL security
         safe_table_name = self._make_sql_safe(table_name)
 
-        # Find all entities referenced in this relationship table by looking for _id columns
-        entity_names = set()
-        for row in table:
-            for col in row.keys():
-                if col.endswith('_id'):
-                    entity_names.add(col[:-3])  # Strip the _id suffix to get entity name
-        # Need to convert to list for consistent ordering in SQL queries
-        entity_names = list(entity_names)
+        # Parse table name to identify the relationship entities
+        parts = table_name.split('_')
+        if len(parts) >= 3 and parts[-1] == 'rel':
+            parent_entity = parts[0]
+            child_entity = parts[1]
 
-        # For each relationship record, map the original IDs to the actual DB IDs we got when inserting entities
-        for row in table:
-            values = []
-            for entity_name in entity_names:
-                col_name = f"{entity_name}_id"
-                # Need to convert to int since IDs in our data structures might be strings
-                original_id = int(row[col_name])
-                # Look up what database ID was assigned when we inserted this entity
-                db_id = self.id_maps[entity_name][original_id]
-                values.append(str(db_id))
+            for row in table:
+                columns = []
+                values = []
+                parent_id = None
+                child_id = None
 
-            # Make column names SQL-safe and properly formatted with brackets
-            safe_columns = [f"[{self._make_sql_safe(entity_name + '_id')}]" for entity_name in entity_names]
+                # Explicitly look for the specific column names
+                parent_col = f"{parent_entity}_id"
+                child_col = f"{child_entity}_id"
 
-            # Build and execute the insert statement
-            insert_sql = f"""
-            INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(safe_columns)})
-            VALUES ({', '.join(values)});
-            """
-            cursor.execute(insert_sql)
+                if parent_col in row and parent_entity in self.id_maps:
+                    original_id = row[parent_col]
+                    if original_id in self.id_maps[parent_entity]:
+                        parent_id = self.id_maps[parent_entity][original_id]
+                        columns.append(f"[{parent_col}]")
+                        values.append(f"'{parent_id}'")
+
+                if child_col in row and child_entity in self.id_maps:
+                    original_id = row[child_col]
+                    if original_id in self.id_maps[child_entity]:
+                        child_id = self.id_maps[child_entity][original_id]
+                        columns.append(f"[{child_col}]")
+                        values.append(f"'{child_id}'")
+
+                # Ensure both IDs are present before inserting
+                if parent_id is not None and child_id is not None:
+                    insert_sql = f"INSERT INTO [{schema}].[{safe_table_name}] ({', '.join(columns)}) VALUES ({', '.join(values)})"
+                    try:
+                        cursor.execute(insert_sql)
+                    except Exception as e:
+                        print(f"Error inserting relationship: {e}")
+                        print(f"SQL: {insert_sql}")
+                elif parent_id is None and child_id is None:
+                    pass
+                else:
+                    print(f"Skipping relationship insert for {table_name} due to missing IDs: "
+                          f"parent_id={parent_id}, child_id={child_id}")
 
     def _get_sql_type(self, value):
         """
@@ -463,13 +565,26 @@ class SqlServerTableCreator:
 
     def _make_sql_safe(self, name):
         """
-        Make a name SQL-safe by removing special characters.
+        Make a name SQL-safe by removing special characters and ensuring valid SQL identifier rules.
 
         Args:
             name: Original name
-
         Returns:
-            str: SQL-safe name
+            str: SQL-safe name that follows SQL Server identifier rules
         """
-        # Replace special characters with underscores to prevent SQL injection
-        return re.sub(r'[^a-zA-Z0-9_]', '_', name)
+        if not name:
+            return '_empty' if name == '' else '_null'
+
+        # Single pass conversion using translation table
+        trans = str.maketrans({
+            char: '_' for char in '`~!@#$%^&*()+={}[]|\\:;"\'<>,.?/ '
+        })
+        safe_name = str(name).translate(trans)
+
+        # Prefix with underscore if starts with digit (single if check)
+        safe_name = f"_{safe_name}" if safe_name[0].isdigit() else safe_name
+
+        # Single regex to collapse multiple underscores
+        safe_name = re.sub('_+', '_', safe_name)[:128].rstrip('_')
+
+        return safe_name
