@@ -1,8 +1,8 @@
 import json
-from core import JsonNormalizer
-from database import SqlServerTableCreator
+from JsonToSQL import JsonNormalizer
+from JsonToSQL import SqlServerTableCreator
 # Load your JSON data
-with open("data.json", "r") as f:
+with open("example.json", "r") as f:
     json_data = json.load(f)
 
 # Define SQL Server credentials

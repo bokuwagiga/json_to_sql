@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="json_to_sql",
-    version="0.1.0",
+    name="JsonToSQL",
+    version="0.2.0",
     description="Convert JSON data to normalized SQL Server tables",
     author="bokuwagiga",
     url="https://github.com/bokuwagiga/json_to_sql",

@@ -1,8 +1,8 @@
 import json
-from main import process_json_to_sql_server
+from JsonToSQL import process_json_to_sql_server
 
 # Load your JSON data
-with open("data.json", "r") as f:
+with open("example.json", "r") as f:
     json_data = json.load(f)
 
 # Define SQL Server credentials

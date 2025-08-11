@@ -42,7 +42,7 @@ pip install pandas pyodbc
 
 ```python
 import json
-from main import process_json_to_sql_server
+from JsonToSQL.main import process_json_to_sql_server
 
 # Load your JSON data
 with open('data.json', 'r') as f:
@@ -64,8 +64,8 @@ tables, id_maps = process_json_to_sql_server(
 ### Using the Components Separately, View the `example_2.py` file
 
 ```python
-from core import JsonNormalizer
-from database import SqlServerTableCreator
+from JsonToSQL.core import JsonNormalizer
+from JsonToSQL.database import SqlServerTableCreator
 
 # Step 1: Normalize JSON data into relational tables
 tables, entity_hierarchy = JsonNormalizer.normalize_json_to_nf(
@@ -88,8 +88,8 @@ id_maps = creator.create_tables_and_insert_data(
 
 ```python
 import json
-from core import JsonNormalizer
-from database import SqlServerTableCreator
+from JsonToSQL.core import JsonNormalizer
+from JsonToSQL.database import SqlServerTableCreator
 
 # Load your JSON data
 with open('data.json', 'r') as f:
@@ -97,7 +97,7 @@ with open('data.json', 'r') as f:
 
 # Step 1: Normalize JSON data into relational tables
 tables, entity_hierarchy = JsonNormalizer().normalize_json_to_nf(
-    json_data, 
+    json_data,
     root_table_name="MyData"
 )
 
