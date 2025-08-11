@@ -159,8 +159,10 @@ class TableBuilder:
             if not rows:  # Skip empty tables
                 continue
 
-            # Get column names from first row (all rows should have same structure)
-            all_columns = rows[0].keys()
+            # Collect all unique columns from all rows
+            all_columns = set()
+            for row in rows:
+                all_columns.update(row.keys())
 
             # Find columns that have at least one non-null value
             # Because We want to remove columns that are completely empty/null
