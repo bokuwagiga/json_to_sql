@@ -105,6 +105,9 @@ class TableBuilder:
             # Create new record with proper ID and convert special values
             table_record = {'id': real_id}
             for key, value in record.items():
+                # Rename original 'id' field to 'original_id' to avoid overwriting surrogate key
+                if key == 'id':
+                    key = 'original_id'
                 # Convert booleans to 1/0 for SQL compatibility
                 if value is True:
                     table_record[key] = 1
