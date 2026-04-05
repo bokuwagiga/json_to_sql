@@ -1,4 +1,5 @@
 # Contains class for analyzing JSON structure
+import json
 
 class JsonStructureAnalyzer:
     """
@@ -48,6 +49,10 @@ class JsonStructureAnalyzer:
                     # Handle primitive values in a list
                     temp_id = self._get_next_temp_id(self.root_name)
                     self.entities[self.root_name].append({"temp_id": temp_id, "value": item})
+                elif isinstance(item, list):
+                    # Inner lists stored as JSON strings
+                    temp_id = self._get_next_temp_id(self.root_name)
+                    self.entities[self.root_name].append({"temp_id": temp_id, "value": json.dumps(item)})
 
     def _init_entity(self, entity_name):
         """
@@ -83,8 +88,10 @@ class JsonStructureAnalyzer:
             entity_name = f"{parent_entity}_{key}"
             self._init_entity(entity_name)
 
-            # Create parent-child relationship
-            rel_name = f"{parent_entity}_{entity_name}_rel"
+            # Relationship name is simply "{entity_name}_rel" — avoids the double-prefix
+            # that would result from f"{parent_entity}_{entity_name}_rel" since entity_name
+            # already contains parent_entity as a prefix.
+            rel_name = f"{entity_name}_rel"
             self._init_relationship(rel_name, parent_entity, entity_name)
 
             # Create new record for this entity with a unique ID
@@ -108,12 +115,13 @@ class JsonStructureAnalyzer:
             })
 
         elif isinstance(value, list):
-            # For arrays, create a child entity using the field name
-            entity_name = key
+            # For arrays, scope the entity name to its parent (same as dict fields)
+            # to prevent collisions when different parents have same-named arrays
+            entity_name = f"{parent_entity}_{key}"
             self._init_entity(entity_name)
 
-            # Link array entity to its parent
-            rel_name = f"{parent_entity}_{entity_name}_rel"
+            # Relationship name is "{entity_name}_rel" — avoids double-prefix
+            rel_name = f"{entity_name}_rel"
             self._init_relationship(rel_name, parent_entity, entity_name)
 
             # Process each item in the array
@@ -144,6 +152,15 @@ class JsonStructureAnalyzer:
                     self.entities[entity_name].append({"temp_id": temp_id, "value": item})
 
                     # Link primitive array item to parent
+                    self.relationships[rel_name].append({
+                        f"{parent_entity}_temp_id": parent_temp_id,
+                        f"{entity_name}_temp_id": temp_id
+                    })
+                elif isinstance(item, list):
+                    # For inner lists, store as a JSON string in a 'value' column
+                    temp_id = self._get_next_temp_id(entity_name)
+                    self.entities[entity_name].append({"temp_id": temp_id, "value": json.dumps(item)})
+
                     self.relationships[rel_name].append({
                         f"{parent_entity}_temp_id": parent_temp_id,
                         f"{entity_name}_temp_id": temp_id

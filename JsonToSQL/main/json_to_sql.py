@@ -1,5 +1,5 @@
 # Contains the main entry point
-from ..core.normalizer import JsonNormalizer
+from ..core.decomposer import JsonDecomposer
 from ..database.sql_writer import SqlServerTableCreator
 
 def process_json_to_sql_server(json_data, server, port, username, password, db, schema, root_table_name="rootTable"):
@@ -18,7 +18,7 @@ def process_json_to_sql_server(json_data, server, port, username, password, db, 
 
     Returns:
         tuple: (tables, id_maps) where:
-            - tables: Dict containing the normalized table data
+            - tables: Dict containing the decomposed table data
             - id_maps: Dict mapping original IDs to database IDs
     """
 
@@ -28,7 +28,7 @@ def process_json_to_sql_server(json_data, server, port, username, password, db, 
     )
 
     # Transform the JSON into normalized tables
-    tables, entity_hierarchy =  JsonNormalizer.normalize_json_to_nf(json_data, root_table_name)
+    tables, entity_hierarchy = JsonDecomposer.decompose_to_tables(json_data, root_table_name)
 
     # Create the actual tables in SQL Server and load the data
     creator = SqlServerTableCreator(conn_str)

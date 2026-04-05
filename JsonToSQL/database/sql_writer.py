@@ -211,18 +211,27 @@ class SqlServerTableCreator:
         # Make sure table name is SQL-safe
         safe_table_name = self._make_sql_safe(table_name)
 
+        # Pre-scan all rows to find the first non-None value per column.
+        # Using only the first row's value causes wrong types when the first row has None.
+        first_non_null = {}
+        for row in table:
+            for col, value in row.items():
+                if col not in first_non_null and value is not None:
+                    first_non_null[col] = value
+
         columns = []
         added_columns = set()  # Track already added column names
 
         for row in table:
-            for col, value in row.items():  # Iterate over key-value pairs
+            for col in row.keys():
                 if col not in added_columns:  # Ensure uniqueness
                     added_columns.add(col)
 
                     if col == 'id':
                         columns.insert(0, "[id] INT IDENTITY(1,1) PRIMARY KEY")
                     else:
-                        sql_type = self._get_sql_type(value)  # Infer SQL type from value
+                        representative = first_non_null.get(col)  # first non-None value
+                        sql_type = self._get_sql_type(representative)
                         safe_col_name = self._make_sql_safe(col)
                         columns.append(f"[{safe_col_name}] {sql_type}")
 
@@ -357,12 +366,13 @@ class SqlServerTableCreator:
                 for col in columns:
                     value = row[col]
                     # Handle different data types appropriately
+                    # bool must be checked before int/float (bool is a subclass of int)
                     if pd.isna(value):
                         values.append("NULL")
-                    elif isinstance(value, (int, float)):
-                        values.append(str(value))
                     elif isinstance(value, bool):
                         values.append("1" if value else "0")  # SQL uses 1/0 for bit values
+                    elif isinstance(value, (int, float)):
+                        values.append(str(value))
                     else:
                         # Escape single quotes in strings (prevents SQL injection)
                         values.append(f"'{str(value).replace('\'', '\'\'')}'")
@@ -501,11 +511,20 @@ class SqlServerTableCreator:
                 if col.endswith('_id'):
                     entity_name = col[:-3]  # Remove '_id' suffix
 
-                    # Check if we have this entity and ID in our maps
-                    if entity_name in self.id_maps and value in self.id_maps[entity_name]:
-                        db_id = self.id_maps[entity_name][value]
-                        columns.append(f"[{col}]")
-                        values.append(str(db_id))
+                    if entity_name not in self.id_maps:
+                        raise KeyError(
+                            f"Entity '{entity_name}' not found in id_maps — "
+                            f"cannot resolve column '{col}' in relationship table '{table_name}'"
+                        )
+                    if value not in self.id_maps[entity_name]:
+                        raise KeyError(
+                            f"ID {value!r} for entity '{entity_name}' not found in id_maps — "
+                            f"cannot resolve column '{col}' in relationship table '{table_name}'"
+                        )
+
+                    db_id = self.id_maps[entity_name][value]
+                    columns.append(f"[{col}]")
+                    values.append(str(db_id))
 
             # Only insert if we have columns and values
             if columns and values:
@@ -515,6 +534,7 @@ class SqlServerTableCreator:
                 except Exception as e:
                     print(f"Error inserting relationship: {e}")
                     print(f"SQL: {insert_sql}")
+                    raise
 
     def _get_sql_type(self, value):
         """
@@ -526,13 +546,13 @@ class SqlServerTableCreator:
         Returns:
             str: SQL Server data type name
         """
-        # Numbers get their native SQL types
-        if isinstance(value, int):
+        # bool must be checked before int because bool is a subclass of int in Python
+        if isinstance(value, bool):
+            return 'BIT'  # SQL Server uses BIT for booleans (1=True, 0=False)
+        elif isinstance(value, int):
             return 'INT'
         elif isinstance(value, float):
             return 'FLOAT'
-        elif isinstance(value, bool):
-            return 'BIT'  # SQL Server uses BIT for booleans (1=True, 0=False)
         elif isinstance(value, (datetime.datetime, datetime.date)):
             return 'DATETIME'
         else:

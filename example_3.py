@@ -1,4 +1,4 @@
-from JsonToSQL import JsonNormalizer
+from JsonToSQL import JsonDecomposer
 from JsonToSQL import SqlServerTableCreator
 import json
 
@@ -7,8 +7,8 @@ schema = "my_schema"
 
 with open("example.json", "r") as f:
     json_data = json.load(f)
-# Step 1: Normalize JSON data into relational tables
-tables, entity_hierarchy = JsonNormalizer().normalize_json_to_nf(
+# Step 1: Decompose JSON data into relational tables
+tables, entity_hierarchy = JsonDecomposer().decompose_to_tables(
     json_data, root_table_name=root_table_name
 )
 

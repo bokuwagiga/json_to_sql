@@ -6,10 +6,11 @@ class TableBuilder:
     Builds tables from entities and relationships with auto-incrementing integer IDs.
     """
 
-    def __init__(self, entities, relationships):
+    def __init__(self, entities, relationships, entity_hierarchy=None):
         # Store input data for processing
         self.entities = entities
         self.relationships = relationships
+        self.entity_hierarchy = entity_hierarchy or {}
         # Output containers
         self.tables = {}  # Will hold final processed table data
         self.id_maps = {}  # Used to track how temp_ids map to real DB IDs
@@ -45,19 +46,11 @@ class TableBuilder:
     def _find_leaf_entities(self):
         """
         Find entities that have no children (leaf nodes in the entity hierarchy).
+        entity_hierarchy maps child → parent, so the set of parent entities is
+        exactly entity_hierarchy.values().
         """
         all_entities = set(self.entities.keys())
-        parents = set()
-
-        # Identify parent entities by checking relationships
-        for rel_data in self.relationships.values():
-            for rel in rel_data:
-                for key in rel.keys():
-                    if key.endswith('_temp_id'):
-                        parent_entity = key.rsplit('_temp_id', 1)[0]
-                        parents.add(parent_entity)
-
-        # Leaf entities are those not in the parents set
+        parents = set(self.entity_hierarchy.values())
         return all_entities - parents
 
     def _update_leaf_entities(self, leaf_entities, processed_entities):
@@ -71,24 +64,9 @@ class TableBuilder:
                     leaf_entities.add(entity_name)
 
     def _find_child_entities(self, parent_entity):
-        """Find all direct child entities of a parent entity."""
-        children = set()
-
-        # Loop through all relationship tables
-        for rel_name, rel_data in self.relationships.items():
-            # Check if this relationship involves the parent entity
-            if rel_data and f"{parent_entity}_temp_id" in rel_data[0]:
-                # For each relationship record in this table
-                for rel in rel_data:
-                    # Look for keys that reference other entities (not the parent)
-                    for key in rel.keys():
-                        # temp_id keys identify entities; we want children, not the parent itself
-                        if key.endswith('_temp_id') and not key.startswith(parent_entity):
-                            # Extract entity name by removing the _temp_id suffix
-                            child_entity = key.rsplit('_temp_id', 1)[0]
-                            children.add(child_entity)
-
-        return children
+        """Find all direct child entities of a parent entity using entity_hierarchy."""
+        return {child for child, parent in self.entity_hierarchy.items()
+                if parent == parent_entity}
 
     def _process_entity(self, entity_name):
         """Process an entity and create its table with auto-incrementing IDs."""
@@ -108,13 +86,8 @@ class TableBuilder:
                 # Rename original 'id' field to 'original_id' to avoid overwriting surrogate key
                 if key == 'id':
                     key = 'original_id'
-                # Convert booleans to 1/0 for SQL compatibility
-                if value is True:
-                    table_record[key] = 1
-                elif value is False:
-                    table_record[key] = 0
                 # Handle empty values consistently
-                elif value in [None, ""]:
+                if value in [None, ""]:
                     table_record[key] = None
                 else:
                     table_record[key] = value
