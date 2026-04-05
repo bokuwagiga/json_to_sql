@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="JsonToSQL",
-    version="0.2.1",
-    description="Convert JSON data to normalized SQL Server tables",
+    version="1.0.0",
+    description="Decompose nested JSON data into relational SQL Server tables",
     author="bokuwagiga",
     url="https://github.com/bokuwagiga/json_to_sql",
     packages=find_packages(),
@@ -19,6 +19,9 @@ setup(
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     python_requires=">=3.7",
 )
