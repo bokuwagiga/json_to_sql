@@ -431,10 +431,10 @@ class SqlServerTableCreator:
                                 alter_column_name = None
                                 for long_col, long_val in zip(safe_columns, values):
                                     stripped_col = long_col.replace('[', '').replace(']', '')
-                                    if (isinstance(long_val, str) and long_val.startswith("'") and
+                                    if (isinstance(long_val, str) and long_val.startswith(("'", "N'")) and
                                             long_val.endswith("'") and stripped_col not in resized_columns):
-                                        # Strip quotes for length calculation on string literals
-                                        val_length = len(long_val) - 2
+                                        # Strip quotes (and any N prefix) for the length calc
+                                        val_length = len(long_val) - (3 if long_val.startswith("N'") else 2)
                                         if val_length > alter_column_length:
                                             alter_column_length = val_length
                                             alter_column_name = stripped_col
@@ -443,7 +443,7 @@ class SqlServerTableCreator:
                                 if alter_column_name is None:
                                     for long_col, long_val in zip(safe_columns, values):
                                         stripped_col = long_col.replace('[', '').replace(']', '')
-                                        if (isinstance(long_val, str) and long_val.startswith("'") and
+                                        if (isinstance(long_val, str) and long_val.startswith(("'", "N'")) and
                                                 long_val.endswith("'")):
                                             alter_column_name = stripped_col
                                             alter_column_length = 'max'

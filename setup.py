@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="JsonToSQL",
-    version="1.0.1",
+    version="1.0.2",
     description="Decompose nested JSON data into relational SQL Server tables",
     author="bokuwagiga",
     url="https://github.com/bokuwagiga/json_to_sql",
