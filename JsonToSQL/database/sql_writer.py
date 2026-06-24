@@ -374,8 +374,10 @@ class SqlServerTableCreator:
                     elif isinstance(value, (int, float)):
                         values.append(str(value))
                     else:
-                        # Escape single quotes in strings (prevents SQL injection)
-                        values.append(f"'{str(value).replace('\'', '\'\'')}'")
+                        # Escape single quotes in strings (prevents SQL injection).
+                        # N prefix => Unicode (nvarchar) literal, otherwise non-ASCII
+                        # (e.g. Georgian) is coerced to '?' via the DB code page.
+                        values.append(f"N'{str(value).replace('\'', '\'\'')}'")
 
                 # Make column names SQL-safe
                 safe_columns = [f"[{self._make_sql_safe(col)}]" for col in columns]
